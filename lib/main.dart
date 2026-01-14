@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
 
-void main() {
+import 'notification_service.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await NotificationService.init();
   runApp(const MyApp());
 }
 
@@ -14,6 +19,7 @@ class MyApp extends StatelessWidget {
       create: (_) => MedicineProvider(),
       child: MaterialApp(
         title: 'Medicine Reminder',
+        debugShowCheckedModeBanner: false,
         theme: ThemeData(
           primarySwatch: Colors.teal,
           elevatedButtonTheme: ElevatedButtonThemeData(
@@ -21,42 +27,55 @@ class MyApp extends StatelessWidget {
           ),
         ),
         home: const HomeScreen(),
-        debugShowCheckedModeBanner: false,
       ),
     );
   }
 }
 
+/* ===================== MODEL ===================== */
+
 class Medicine {
   final String name;
   final String dose;
-  final TimeOfDay time;
-  Medicine({required this.name, required this.dose, required this.time});
+  final DateTime time;
+
+  Medicine({
+    required this.name,
+    required this.dose,
+    required this.time,
+  });
 }
+
+/* ===================== PROVIDER ===================== */
 
 class MedicineProvider extends ChangeNotifier {
   final List<Medicine> _medicines = [];
-  
+
   List<Medicine> get medicines {
     final sorted = List<Medicine>.from(_medicines);
-    sorted.sort((a, b) {
-      final aMinutes = a.time.hour * 60 + a.time.minute;
-      final bMinutes = b.time.hour * 60 + b.time.minute;
-      return aMinutes.compareTo(bMinutes);
-    });
+    sorted.sort((a, b) => a.time.compareTo(b.time));
     return sorted;
   }
 
   void addMedicine(Medicine medicine) {
     _medicines.add(medicine);
+
+    NotificationService.scheduleNotification(
+      medicine.hashCode,
+      medicine.name,
+      medicine.time,
+    );
+
     notifyListeners();
   }
 
   void deleteMedicine(Medicine medicine) {
-    _medicines.removeWhere((m) => m.name == medicine.name && m.time == medicine.time);
+    _medicines.remove(medicine);
     notifyListeners();
   }
 }
+
+/* ===================== HOME SCREEN ===================== */
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -69,27 +88,18 @@ class HomeScreen extends StatelessWidget {
         backgroundColor: Colors.teal,
       ),
       body: Consumer<MedicineProvider>(
-        builder: (context, provider, child) {
+        builder: (context, provider, _) {
           final medicines = provider.medicines;
+
           if (medicines.isEmpty) {
             return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(32.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.medication, size: 64, color: Colors.grey),
-                    SizedBox(height: 16),
-                    Text('No medicines added', 
-                         style: TextStyle(fontSize: 20, color: Colors.grey)),
-                    SizedBox(height: 8),
-                    Text('Tap + to add your first medicine', 
-                         style: TextStyle(color: Colors.grey)),
-                  ],
-                ),
+              child: Text(
+                'No medicines added',
+                style: TextStyle(fontSize: 18, color: Colors.grey),
               ),
             );
           }
+
           return ListView.builder(
             itemCount: medicines.length,
             itemBuilder: (context, index) {
@@ -100,15 +110,21 @@ class HomeScreen extends StatelessWidget {
                   leading: CircleAvatar(
                     backgroundColor: Colors.teal,
                     child: Text(
-                      '${medicine.time.hour.toString().padLeft(2, '0')}:${medicine.time.minute.toString().padLeft(2, '0')}',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      DateFormat('HH:mm').format(medicine.time),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                   title: Text(medicine.name),
-                  subtitle: Text('${medicine.dose} • ${medicine.time.format(context)}'),
+                  subtitle: Text(
+                    '${medicine.dose} • ${DateFormat.jm().format(medicine.time)}',
+                  ),
                   trailing: IconButton(
                     icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () => provider.deleteMedicine(medicine),
+                    onPressed: () =>
+                        provider.deleteMedicine(medicine),
                   ),
                 ),
               );
@@ -117,22 +133,28 @@ class HomeScreen extends StatelessWidget {
         },
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => const AddMedicineScreen()),
-        ),
         backgroundColor: Colors.orange,
         child: const Icon(Icons.add),
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const AddMedicineScreen(),
+            ),
+          );
+        },
       ),
     );
   }
 }
 
+/* ===================== ADD MEDICINE SCREEN ===================== */
+
 class AddMedicineScreen extends StatefulWidget {
   const AddMedicineScreen({super.key});
 
   @override
-  _AddMedicineScreenState createState() => _AddMedicineScreenState();
+  State<AddMedicineScreen> createState() => _AddMedicineScreenState();
 }
 
 class _AddMedicineScreenState extends State<AddMedicineScreen> {
@@ -149,7 +171,7 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
         backgroundColor: Colors.teal,
       ),
       body: Padding(
-        padding: const EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
           child: Column(
@@ -157,58 +179,69 @@ class _AddMedicineScreenState extends State<AddMedicineScreen> {
               TextFormField(
                 controller: _nameController,
                 decoration: const InputDecoration(
-                  labelText: 'Medicine Name *',
+                  labelText: 'Medicine Name',
                   border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.medication),
                 ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) return 'Enter medicine name';
-                  return null;
-                },
+                validator: (v) =>
+                    v == null || v.isEmpty ? 'Required' : null,
               ),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _doseController,
                 decoration: const InputDecoration(
-                  labelText: 'Dose (e.g., 1 tablet) *',
+                  labelText: 'Dose',
                   border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.local_pharmacy),
                 ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) return 'Enter dose';
-                  return null;
-                },
+                validator: (v) =>
+                    v == null || v.isEmpty ? 'Required' : null,
               ),
               const SizedBox(height: 16),
               ListTile(
-                title: Text(_selectedTime?.format(context) ?? 'Select Time'),
+                title: Text(
+                  _selectedTime == null
+                      ? 'Select Time'
+                      : _selectedTime!.format(context),
+                ),
                 trailing: const Icon(Icons.access_time),
                 onTap: () async {
                   final picked = await showTimePicker(
                     context: context,
                     initialTime: TimeOfDay.now(),
                   );
-                  if (picked != null) setState(() => _selectedTime = picked);
+                  if (picked != null) {
+                    setState(() => _selectedTime = picked);
+                  }
                 },
               ),
-              const SizedBox(height: 32),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    if (_formKey.currentState!.validate() && _selectedTime != null) {
-                      Provider.of<MedicineProvider>(context, listen: false).addMedicine(
-                        Medicine(
-                          name: _nameController.text,
-                          dose: _doseController.text,
-                          time: _selectedTime!,
-                        ),
-                      );
-                      Navigator.pop(context);
-                    }
-                  },
-                  child: const Text('SAVE MEDICINE'),
-                ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                onPressed: () {
+                  if (_formKey.currentState!.validate() &&
+                      _selectedTime != null) {
+                    final now = DateTime.now();
+                    final scheduledTime = DateTime(
+                      now.year,
+                      now.month,
+                      now.day,
+                      _selectedTime!.hour,
+                      _selectedTime!.minute,
+                    );
+
+                    Provider.of<MedicineProvider>(
+                      context,
+                      listen: false,
+                    ).addMedicine(
+                      Medicine(
+                        name: _nameController.text,
+                        dose: _doseController.text,
+                        time: scheduledTime,
+                      ),
+                    );
+
+                    Navigator.pop(context);
+                  }
+                },
+                child: const Text('SAVE MEDICINE'),
               ),
             ],
           ),
